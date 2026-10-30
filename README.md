@@ -82,6 +82,14 @@ npm run demo               # http://localhost:3000 with sample alerts
 npm run demo -- healthy    # all-green variant
 ```
 
+**Deployment hygiene (already configured).** `app/vercel.json` sets `git.deploymentEnabled` so only `main` deploys; branches and pull requests
+create no Preview deployments. After each successful *production* deployment, the GitHub Action
+`.github/workflows/cleanup-vercel-deployments.yml` runs `scripts/cleanup-vercel-deployments.sh`, which deletes every older Preview and Production
+deployment of the project (the live one, newer ones and in-progress builds are kept; nothing is deleted unless the live deployment is READY).
+Add three repository secrets once (GitHub -> Settings -> Secrets and variables -> Actions): `VERCEL_TOKEN` (vercel.com/account/tokens),
+`VERCEL_PROJECT_ID` (Project Settings -> General) and `VERCEL_TEAM_ID` (Team Settings -> General). Try it first from the Actions tab with
+"Run workflow" (dry run is the default). Deleting old production deployments also removes them as rollback targets; to roll back, redeploy an earlier commit.
+
 Show it on Vercel without a backend: add the environment variable `DEMO_MODE=true` (Production or Preview) and redeploy.
 The page then serves built-in sample data under a "Demo mode" banner and ignores `PROMETHEUS_URL`/`PROMETHEUS_BEARER_TOKEN`.
 Remove the variable (or set it to `false`) once the real backend is connected, and keep the Basic-auth variables set so the demo isn't public.
