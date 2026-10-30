@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
+    "demo": "bash demo/run.sh",
     "test": "node --test --experimental-strip-types src/lib/status.test.ts"
   },
   "dependencies": {

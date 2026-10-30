@@ -74,6 +74,14 @@ Then in Vercel:
 `DASHBOARD_BASIC_AUTH_*` variables (the app then requires HTTP Basic auth on every page and API call),
 or put the project behind Vercel Authentication / SSO in *Settings → Deployment Protection*.
 
+Try it without a backend (sample data from a fake Prometheus, nothing to configure):
+
+```bash
+cd app && npm install
+npm run demo               # http://localhost:3000 with sample alerts
+npm run demo -- healthy    # all-green variant
+```
+
 Local development:
 
 ```bash
