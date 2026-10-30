@@ -1,0 +1,7 @@
+# Captive portal hosts (ICMP reachability only).
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.0.80"]
+  labels:
+    role: captive-portal
+    site: main-campus

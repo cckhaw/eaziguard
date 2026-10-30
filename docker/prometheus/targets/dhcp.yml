@@ -1,0 +1,7 @@
+# DHCP servers (ICMP + UDP/67). role must be dhcp-server for the DHCPServerUnreachable alert.
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.0.67"]
+  labels:
+    role: dhcp-server
+    site: main-campus

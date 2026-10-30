@@ -1,0 +1,8 @@
+# Internet gateway / edge firewall (ICMP every 5s + SNMP).
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.0.1"]
+  labels:
+    role: gateway
+    site: main-campus
+    device: fw-edge-01

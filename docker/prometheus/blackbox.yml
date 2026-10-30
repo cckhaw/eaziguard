@@ -1,0 +1,107 @@
+# blackbox_exporter modules used by prometheus.yml.
+
+modules:
+  # ------------------------------------------------------------------- ICMP
+  # Plain echo. Round-trip time is exposed as probe_icmp_duration_seconds{phase="rtt"}.
+  icmp:
+    prober: icmp
+    timeout: 3s
+    icmp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+
+  # -------------------------------------------------------------------- DNS
+  # Latency of the whole exchange is probe_duration_seconds; the query/response
+  # phases are in probe_dns_duration_seconds{phase=...}.
+  dns_internal:
+    prober: dns
+    timeout: 4s
+    dns:
+      query_name: "portal.campus.example.edu"   # an A record served by your internal zone
+      query_type: A
+      preferred_ip_protocol: ip4
+      transport_protocol: udp
+      recursion_desired: true
+      valid_rcodes: [NOERROR]
+      validate_answer_rrs:
+        fail_if_none_matches_regexp: ['.+\s+A\s+\d+\.\d+\.\d+\.\d+']
+
+  dns_external:
+    prober: dns
+    timeout: 4s
+    dns:
+      query_name: "www.wikipedia.org"
+      query_type: A
+      preferred_ip_protocol: ip4
+      transport_protocol: udp
+      recursion_desired: true
+      valid_rcodes: [NOERROR]
+      validate_answer_rrs:
+        fail_if_none_matches_regexp: ['.+\s+A\s+\d+\.\d+\.\d+\.\d+']
+
+  # ------------------------------------------------------------------- RADIUS
+  # UDP/1812 reachability. The payload is a minimal RADIUS Access-Request
+  # (code 1, id 1, length 20+7, 16-byte authenticator, one User-Name attribute
+  # "probe"), which a RADIUS server answers with Access-Reject.
+  #
+  # IMPORTANT: UDP has no handshake. The blackbox UDP prober can only report a
+  # failure for local errors (resolution, socket, send) or when it was asked to
+  # match a reply. The reply match below needs the monitoring host to be a
+  # registered RADIUS client; if you don't want that, delete `expect` and treat
+  # this as a "port reachable from the VPS" check only. Authoritative AAA
+  # latency comes from the edge probes (edgeprobe_radius_response_seconds).
+  udp_radius_auth:
+    prober: udp
+    timeout: 4s
+    udp:
+      preferred_ip_protocol: ip4
+      query_response:
+        - send: "\x01\x01\x00\x1b\x73\x65\x6e\x74\x69\x6e\x65\x6c\x2d\x70\x72\x6f\x62\x65\x2d\x30\x01\x07\x70\x72\x6f\x62\x65"
+          expect: "^\x03"
+
+  # --------------------------------------------------------------------- DHCP
+  # UDP/67 on a DHCP server. Datagrams to 67 are only answered for well-formed
+  # DHCP requests, so this is a "socket reachable" check; actual lease
+  # acquisition latency is measured by the edge probes (edgeprobe_dhcp_*), which
+  # speak real DHCP from the client VLANs. UDP/68 is the client port and is not
+  # listened on by servers, so there is nothing meaningful to probe there.
+  udp_dhcp_server:
+    prober: udp
+    timeout: 3s
+    udp:
+      preferred_ip_protocol: ip4
+      # Sent payload is a bare BOOTP header with the BOOTREQUEST op code; no
+      # reply is expected (see comment above).
+      query_response:
+        - send: "\x01\x01\x06\x00"
+
+  # ------------------------------------------------------------ Captive portal
+  # The portal's HTTP entry point must redirect (302/303/307) to its login page.
+  # The redirect is deliberately not followed. Redirect interception for
+  # unauthenticated *clients* is tested from the client VLANs by the edge probes.
+  http_portal_redirect:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+      valid_status_codes: [302, 303, 307]
+      fail_if_header_not_matches:
+        - header: Location
+          regexp: '^https?://'
+          allow_missing: false
+
+  # The portal login page after the redirect, over TLS.
+  http_portal_page:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      valid_status_codes: [200]
+      fail_if_ssl: false
+      fail_if_not_ssl: true
+      tls_config:
+        insecure_skip_verify: false

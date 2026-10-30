@@ -1,0 +1,7 @@
+# Wireless LAN controllers (SNMP + ICMP).
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.3.10"]
+  labels:
+    role: wifi-controller
+    site: main-campus

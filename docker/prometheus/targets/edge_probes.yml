@@ -1,0 +1,15 @@
+# Edge probes (Raspberry Pi / mini PC) exposing /metrics on :8000. One entry per zone.
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.20.1.5:8000"]
+  labels:
+    zone: dorm-a
+    role: edge-probe
+- targets: ["10.20.2.5:8000"]
+  labels:
+    zone: library
+    role: edge-probe
+- targets: ["10.20.3.5:8000"]
+  labels:
+    zone: lecture-hall-1
+    role: edge-probe

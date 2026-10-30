@@ -1,0 +1,9 @@
+# Plain-HTTP entry point of the captive portal. It must answer with a redirect to the
+# HTTPS login page (module http_portal_redirect). Interception of *unauthenticated clients'*
+# traffic can only be observed from a client VLAN, which is what the edge probes do.
+# Prometheus re-reads this file automatically.
+- targets:
+    - "http://portal.campus.example.edu/"
+  labels:
+    role: captive-portal
+    check: http-entry-redirect

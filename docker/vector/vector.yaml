@@ -1,0 +1,84 @@
+# Vector: syslog ingestion for CampusNet-Sentinel.
+#
+#   switches / controllers / firewall --syslog--> :514 --> classify --> metrics (:9598)
+#                                                              \--> /var/log/campus-syslog (searchable files)
+#
+# Prometheus scrapes the derived counters (job "vector"); raw lines are kept on
+# disk, one file per day and per sending host.
+
+data_dir: /var/lib/vector
+
+sources:
+  syslog_udp:
+    type: syslog
+    mode: udp
+    address: 0.0.0.0:514
+
+  syslog_tcp:
+    type: syslog
+    mode: tcp
+    address: 0.0.0.0:514
+
+  vector_internal:
+    type: internal_metrics
+
+transforms:
+  # Give every event a coarse class so noisy device-specific wording turns into
+  # a small, bounded label set (never use raw message text as a metric label).
+  classify:
+    type: remap
+    inputs: [syslog_udp, syslog_tcp]
+    source: |
+      msg = downcase(string(.message) ?? "")
+
+      # The host name becomes both a metric label and a file name on disk, and
+      # UDP syslog is trivially spoofable: keep it to a safe character set.
+      host = replace(string(.host) ?? "unknown", r'[^A-Za-z0-9_.:-]', "_")
+      .host = replace(host, "..", "_")
+      .severity = string(.severity) ?? "unknown"
+
+      if match(msg, r'changed state to (up|down)|link-3-updown|link (is )?(up|down)|interface .* (up|down)|port .* (link )?(up|down)') {
+        .event_class = "link_flap"
+      } else if match(msg, r'dhcp.*(nak|exhaust|no free|pool|decline)|no free leases') {
+        .event_class = "dhcp_problem"
+      } else if match(msg, r'radius|access-reject|authentication fail|auth fail|eap|dot1x|802\.1x') {
+        .event_class = "aaa_event"
+      } else if match(msg, r'disassoc|deauth|ap (down|lost|disconnect)|capwap|ap .* (joined|left)') {
+        .event_class = "wifi_event"
+      } else if match(msg, r'spanning.?tree|stp|topology change|loop') {
+        .event_class = "stp_event"
+      } else if match(msg, r'crc|fcs|input error|output error|late collision') {
+        .event_class = "port_errors"
+      } else {
+        .event_class = "other"
+      }
+
+  syslog_to_metrics:
+    type: log_to_metric
+    inputs: [classify]
+    metrics:
+      - type: counter
+        field: message
+        name: syslog_events_total
+        namespace: campus
+        tags:
+          host: "{{ host }}"
+          severity: "{{ severity }}"
+          event_class: "{{ event_class }}"
+
+sinks:
+  prometheus:
+    type: prometheus_exporter
+    inputs: [syslog_to_metrics, vector_internal]
+    address: 0.0.0.0:9598
+    # Drop series that stop receiving data (e.g. decommissioned switches) after 1h.
+    flush_period_secs: 3600
+
+  raw_files:
+    type: file
+    inputs: [classify]
+    path: /var/log/campus-syslog/%Y-%m-%d/{{ host }}.log
+    encoding:
+      codec: json
+    # Rotation is by date (new directory per day); prune old directories with
+    # a host cron job, e.g.  find /var/lib/docker/volumes/*vector-logs/_data -mtime +30 -delete
