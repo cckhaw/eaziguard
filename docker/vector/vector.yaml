@@ -1,4 +1,4 @@
-# Vector: syslog ingestion for CampusNet-Sentinel.
+# Vector: syslog ingestion for eaziguard.
 #
 #   switches / controllers / firewall --syslog--> :514 --> classify --> metrics (:9598)
 #                                                              \--> /var/log/campus-syslog (searchable files)

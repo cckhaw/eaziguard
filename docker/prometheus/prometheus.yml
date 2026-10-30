@@ -1,4 +1,4 @@
-# CampusNet-Sentinel Prometheus configuration.
+# eaziguard Prometheus configuration.
 #
 # Static inventories live in ./targets/*.yml (file-based service discovery), so
 # adding a switch, AP or edge probe never requires touching this file: edit the
@@ -10,7 +10,7 @@ global:
   evaluation_interval: 15s
   external_labels:
     environment: campus
-    monitor: campusnet-sentinel
+    monitor: eaziguard
 
 rule_files:
   - /etc/prometheus/alerts.yml

@@ -1,4 +1,4 @@
-"""Demo-only fake Prometheus for the CampusNet-Sentinel dashboard (standard library only).
+"""Demo-only fake Prometheus for the eaziguard dashboard (standard library only).
 
 Serves the two endpoints the dashboard uses (POST /api/v1/query, GET /api/v1/alerts)
 with canned campus data, and enforces the same bearer token as the real gateway.

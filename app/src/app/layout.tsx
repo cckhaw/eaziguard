@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CampusNet-Sentinel",
+  title: "eaziguard",
   description: "Early-warning health dashboard for the campus network",
   robots: { index: false, follow: false },
 };

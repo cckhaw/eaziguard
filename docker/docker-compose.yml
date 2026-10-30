@@ -1,4 +1,4 @@
-# CampusNet-Sentinel backend stack (campus VPS / on-prem server).
+# eaziguard backend stack (campus VPS / on-prem server).
 #
 #   cp .env.example .env   # then edit every value
 #   docker compose up -d
@@ -8,7 +8,7 @@
 # the Vercel dashboard reaches Prometheus only through Caddy, which enforces a
 # bearer token and permits just the read-only query endpoints.
 
-name: campusnet-sentinel
+name: eaziguard
 
 networks:
   monitoring:

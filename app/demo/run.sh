@@ -12,5 +12,4 @@ trap 'kill "$MOCK_PID" 2>/dev/null || true' EXIT
 
 echo "Dashboard: http://localhost:3000   (scenario: $SCENARIO)"
 PROMETHEUS_URL=http://127.0.0.1:19090 PROMETHEUS_BEARER_TOKEN=demo-token \
-  DASHBOARD_BASIC_AUTH_USER= DASHBOARD_BASIC_AUTH_PASSWORD= \
   npx next dev

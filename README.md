@@ -1,4 +1,4 @@
-# CampusNet-Sentinel
+# eaziguard
 
 Early-warning monitoring for a school or university campus network. It watches the
 internet gateway/firewall, DNS/DHCP, AAA/RADIUS, core and distribution switches,
@@ -56,7 +56,7 @@ Thresholds are deliberately conservative starting points. Tune them in `alerts.y
 ```bash
 git clone https://github.com/cckhaw/eaziguard.git     # or: git init && git remote add origin <your repo>
 cd eaziguard
-git add . && git commit -m "Initial CampusNet-Sentinel import"
+git add . && git commit -m "Initial eaziguard import"
 git push -u origin main
 ```
 
@@ -66,13 +66,16 @@ Then in Vercel:
 2. **Root Directory:** set it to `app` (this is what makes the monorepo work; `app/vercel.json` is read from there).
    Framework preset is detected as Next.js. Leave the build and install commands as-is.
 3. **Environment Variables** (see section 3) — add `PROMETHEUS_URL` and `PROMETHEUS_BEARER_TOKEN` for
-   Production *and* Preview, plus `DASHBOARD_BASIC_AUTH_USER` / `DASHBOARD_BASIC_AUTH_PASSWORD`.
-4. **Deploy.** Every push to `main` now deploys to production and every pull request gets a preview URL.
+   Production, plus `DASHBOARD_USER` / `DASHBOARD_PASSWORD` (the sign-in).
+4. **Deploy.** Every push to `main` deploys to production; branches and pull requests do not deploy (see below).
    Pushes that only touch `docker/` or `edge-probe/` skip the build (`ignoreCommand` in `app/vercel.json`).
 
-**Protect the dashboard.** It exposes your network's health and device names. Either set the two
-`DASHBOARD_BASIC_AUTH_*` variables (the app then requires HTTP Basic auth on every page and API call),
-or put the project behind Vercel Authentication / SSO in *Settings → Deployment Protection*.
+**Sign-in.** The front page of the dashboard is a login form. Set `DASHBOARD_USER` and `DASHBOARD_PASSWORD` (the older names
+`DASHBOARD_BASIC_AUTH_USER` / `DASHBOARD_BASIC_AUTH_PASSWORD` still work) and the data API only answers requests carrying a valid session.
+A successful sign-in sets a signed, HTTP-only, same-site cookie valid for 8 hours; "Sign out" clears it. In production, with no credentials
+set, the dashboard refuses to show data rather than falling back to open. Optional `SESSION_SECRET` signs the cookie independently of the
+password; otherwise changing the password signs everyone out. Repeated wrong passwords are slowed down and temporarily rejected (best effort per
+serverless instance), so use a long random password. You can add Vercel Authentication in *Settings → Deployment Protection* as a second layer.
 
 Try it without a backend (sample data from a fake Prometheus, nothing to configure):
 
@@ -92,7 +95,7 @@ Add three repository secrets once (GitHub -> Settings -> Secrets and variables -
 
 Show it on Vercel without a backend: add the environment variable `DEMO_MODE=true` (Production or Preview) and redeploy.
 The page then serves built-in sample data under a "Demo mode" banner and ignores `PROMETHEUS_URL`/`PROMETHEUS_BEARER_TOKEN`.
-Remove the variable (or set it to `false`) once the real backend is connected, and keep the Basic-auth variables set so the demo isn't public.
+Remove the variable (or set it to `false`) once the real backend is connected, and keep `DASHBOARD_USER` / `DASHBOARD_PASSWORD` set so the demo isn't public.
 
 Local development:
 
@@ -248,7 +251,7 @@ What was actually run while building this repository:
   fire, hold off for their `for:` period, and render their annotations correctly on synthetic series.
 - Edge probe: 20 unit/integration tests against in-process mock DHCP, DNS, HTTP-portal and RADIUS servers; a live `/metrics` endpoint check.
 - Dashboard: `tsc`, ESLint, `next build`, 8 unit tests of the status logic, and an end-to-end run against a mock Prometheus that enforces the bearer token
-  (healthy, degraded, wrong-token, unconfigured, non-HTTPS and Basic-auth paths), plus light, dark and phone-width screenshots.
+  (healthy, degraded, wrong-token, unconfigured, non-HTTPS and sign-in paths), plus light, dark and phone-width screenshots.
 - `docker compose config` parses the stack.
 
 Not exercised, because there was no Docker daemon or lab network: the containers themselves, the Caddyfile and Vector pipeline
