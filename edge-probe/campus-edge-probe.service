@@ -1,5 +1,5 @@
 [Unit]
-Description=CampusNet-Sentinel edge probe
+Description=eaziguard edge probe
 Documentation=https://github.com/cckhaw/eaziguard
 # DHCP/DNS/portal tests are meaningless before the NIC has an address.
 Wants=network-online.target

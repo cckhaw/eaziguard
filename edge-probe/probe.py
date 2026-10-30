@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CampusNet-Sentinel edge probe.
+"""eaziguard edge probe.
 
 Runs on a Raspberry Pi / mini PC plugged into a client VLAN (dorm, library,
 lecture hall) and behaves like a student device: it asks for a DHCP lease, resolves
@@ -126,7 +126,7 @@ class Config:
     radius_servers: List[str]
     radius_port: int
     radius_secret: bytes = field(repr=False)
-    radius_username: str = "sentinel-probe"
+    radius_username: str = "eaziguard-probe"
     radius_password: str = field(default="", repr=False)
     radius_timeout: float = 3.0
 
@@ -189,7 +189,7 @@ class Config:
             radius_servers=radius_servers,
             radius_port=int(_env_number("RADIUS_PORT", 1812, 1, 65535)),
             radius_secret=radius_secret.encode(),
-            radius_username=_env_str("RADIUS_TEST_USERNAME", "sentinel-probe"),
+            radius_username=_env_str("RADIUS_TEST_USERNAME", "eaziguard-probe"),
             radius_password=_env_str("RADIUS_TEST_PASSWORD", "not-a-real-password"),
             radius_timeout=_env_number("RADIUS_TIMEOUT_SECONDS", 3, 0.5, 30),
         )
@@ -306,7 +306,7 @@ def build_dhcp_packet(
     opts: List[Tuple[int, bytes]] = [
         (53, bytes([msg_type])),
         (61, b"\x01" + mac),  # client identifier
-        (12, b"sentinel-probe"),
+        (12, b"eaziguard-probe"),
     ]
     if msg_type in (DHCPDISCOVER, DHCPREQUEST):
         opts.append((55, bytes([1, 3, 6, 15, 51, 54])))  # parameter request list
@@ -527,7 +527,7 @@ def run_dns_test(cfg: Config) -> List[Sample]:
 # Captive portal
 # ============================================================================
 REDIRECT_CODES = (301, 302, 303, 307, 308)
-_PORTAL_USER_AGENT = "CaptiveNetworkSupport-sentinel-probe/" + VERSION
+_PORTAL_USER_AGENT = "CaptiveNetworkSupport-eaziguard-probe/" + VERSION
 
 
 def run_portal_test(cfg: Config) -> List[Sample]:
@@ -638,7 +638,7 @@ def build_radius_access_request(cfg: Config, identifier: int, authenticator: byt
     attrs = (
         _radius_attr(1, cfg.radius_username.encode())
         + _radius_attr(2, _radius_encrypt_password(cfg.radius_password.encode(), cfg.radius_secret, authenticator))
-        + _radius_attr(32, f"sentinel-{cfg.zone}".encode()[:253])
+        + _radius_attr(32, f"eaziguard-{cfg.zone}".encode()[:253])
     )
     ma_placeholder = _radius_attr(80, bytes(16))
     length = 20 + len(attrs) + len(ma_placeholder)
@@ -755,7 +755,7 @@ def collect_cycle(cfg: Config) -> List[Sample]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="CampusNet-Sentinel edge probe")
+    parser = argparse.ArgumentParser(description="eaziguard edge probe")
     parser.add_argument("--once", action="store_true", help="run one cycle, print metrics, exit")
     args = parser.parse_args(argv)
 

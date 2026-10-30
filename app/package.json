@@ -1,8 +1,8 @@
 {
-  "name": "campusnet-sentinel-dashboard",
+  "name": "eaziguard-dashboard",
   "version": "1.0.0",
   "private": true,
-  "description": "CampusNet-Sentinel operational health dashboard (Vercel frontend + Prometheus proxy API)",
+  "description": "eaziguard operational health dashboard (Vercel frontend + Prometheus proxy API)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,7 +10,7 @@
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
-    "test": "node --test --experimental-strip-types src/lib/status.test.ts"
+    "test": "node --test --experimental-strip-types src/lib/status.test.ts src/lib/session.test.ts"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

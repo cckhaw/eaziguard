@@ -10,6 +10,8 @@ import {
   HelpCircle,
   KeyRound,
   LogIn,
+  LogOut,
+  Lock,
   Network,
   Radio,
   RefreshCw,
@@ -89,11 +91,13 @@ type LoadState =
   | { kind: "ready"; data: MetricsResponse; stale: boolean }
   | { kind: "error"; error: ApiError | { error: "network"; message: string } };
 
-function useMetrics() {
+function useMetrics(onUnauthorized: () => void) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [refreshing, setRefreshing] = useState(false);
   const lastGood = useRef<MetricsResponse | null>(null);
   const inFlight = useRef<AbortController | null>(null);
+  const unauthorized = useRef(onUnauthorized);
+  unauthorized.current = onUnauthorized;
 
   const load = useCallback(async () => {
     inFlight.current?.abort();
@@ -102,6 +106,11 @@ function useMetrics() {
     setRefreshing(true);
     try {
       const response = await fetch("/api/metrics", { cache: "no-store", signal: controller.signal });
+      if (response.status === 401) {
+        lastGood.current = null;
+        unauthorized.current();
+        return;
+      }
       const body: unknown = await response.json().catch(() => null);
       if (response.ok && body && typeof body === "object" && "components" in body) {
         lastGood.current = body as MetricsResponse;
@@ -299,8 +308,16 @@ function ErrorPanel({ error, onRetry }: { error: ApiError | { error: "network"; 
   );
 }
 
-export default function DashboardPage() {
-  const { state, refreshing, reload } = useMetrics();
+function Dashboard({
+  canSignOut,
+  onSignOut,
+  onUnauthorized,
+}: {
+  canSignOut: boolean;
+  onSignOut: () => void;
+  onUnauthorized: () => void;
+}) {
+  const { state, refreshing, reload } = useMetrics(onUnauthorized);
   const [now, setNow] = useState(() => Date.now());
 
   // Tick once a second-ish so "updated 12s ago" and alert ages stay live between fetches.
@@ -324,7 +341,7 @@ export default function DashboardPage() {
             <span className={`relative inline-flex h-3 w-3 rounded-full ${overallStyle.dot}`} />
           </span>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">CampusNet-Sentinel</h1>
+            <h1 className="text-xl font-bold tracking-tight">eaziguard</h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">Campus network early-warning dashboard</p>
           </div>
         </div>
@@ -353,6 +370,15 @@ export default function DashboardPage() {
           >
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden /> Refresh
           </button>
+          {canSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+            </button>
+          )}
         </div>
       </header>
 
@@ -433,5 +459,153 @@ export default function DashboardPage() {
         </>
       )}
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Front page: sign-in section until a session exists, then the dashboard.
+// ---------------------------------------------------------------------------
+type AuthState =
+  | { kind: "checking" }
+  | { kind: "signed-out"; notice?: string }
+  | { kind: "unavailable"; message: string }
+  | { kind: "signed-in"; canSignOut: boolean };
+
+function LoginSection({ notice, onSignedIn }: { notice?: string; onSignedIn: () => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (response.ok) {
+        setPassword("");
+        onSignedIn();
+        return;
+      }
+      const body = (await response.json().catch(() => null)) as { message?: string } | null;
+      setError(body?.message ?? `Sign-in failed (HTTP ${response.status}).`);
+    } catch {
+      setError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field =
+    "mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 dark:border-slate-700 dark:bg-slate-950";
+
+  return (
+    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-10">
+      <section aria-labelledby="login-title" className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex items-center gap-3">
+          <span className="rounded-lg bg-slate-100 p-2 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <Lock className="h-5 w-5" aria-hidden />
+          </span>
+          <div>
+            <h1 id="login-title" className="text-xl font-bold tracking-tight">eaziguard</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">Campus network early-warning dashboard</p>
+          </div>
+        </div>
+
+        {notice && (
+          <p role="status" className="mt-4 rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-200">
+            {notice}
+          </p>
+        )}
+
+        <form onSubmit={submit} className="mt-5 space-y-4">
+          <div>
+            <label htmlFor="username" className="text-sm font-medium">Username</label>
+            <input id="username" name="username" type="text" autoComplete="username" required autoFocus
+              value={username} onChange={(e) => setUsername(e.target.value)} className={field} />
+          </div>
+          <div>
+            <label htmlFor="password" className="text-sm font-medium">Password</label>
+            <input id="password" name="password" type="password" autoComplete="current-password" required
+              value={password} onChange={(e) => setPassword(e.target.value)} className={field} />
+          </div>
+          {error && (
+            <p role="alert" className="flex items-start gap-2 text-sm text-red-700 dark:text-red-400">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden /> {error}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+          >
+            {busy ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden /> : <LogIn className="h-4 w-4" aria-hidden />}
+            Sign in
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+export default function HomePage() {
+  const [auth, setAuth] = useState<AuthState>({ kind: "checking" });
+
+  const check = useCallback(async () => {
+    try {
+      const response = await fetch("/api/auth/session", { cache: "no-store" });
+      const body = (await response.json()) as { mode: "configured" | "open" | "misconfigured"; authenticated: boolean };
+      if (body.mode === "misconfigured") {
+        setAuth({
+          kind: "unavailable",
+          message: "Sign-in is not configured. Set DASHBOARD_USER and DASHBOARD_PASSWORD in the deployment's environment variables.",
+        });
+      } else if (body.authenticated) {
+        setAuth({ kind: "signed-in", canSignOut: body.mode === "configured" });
+      } else {
+        setAuth({ kind: "signed-out" });
+      }
+    } catch {
+      setAuth({ kind: "unavailable", message: "Could not reach the server." });
+    }
+  }, []);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    setAuth({ kind: "signed-out" });
+  }
+
+  if (auth.kind === "checking") {
+    return (
+      <main className="flex min-h-screen items-center justify-center text-slate-500" role="status">
+        <RefreshCw className="mr-2 h-5 w-5 animate-spin" aria-hidden /> Loading…
+      </main>
+    );
+  }
+  if (auth.kind === "unavailable") {
+    return (
+      <main className="mx-auto max-w-xl px-4">
+        <ErrorPanel error={{ error: "not_configured", message: auth.message }} onRetry={() => void check()} />
+      </main>
+    );
+  }
+  if (auth.kind === "signed-out") {
+    return <LoginSection notice={auth.notice} onSignedIn={() => void check()} />;
+  }
+  return (
+    <Dashboard
+      canSignOut={auth.canSignOut}
+      onSignOut={() => void signOut()}
+      onUnauthorized={() => setAuth({ kind: "signed-out", notice: "Your session has expired. Please sign in again." })}
+    />
   );
 }
