@@ -28,6 +28,16 @@ api() { # method path [query-string-without-leading-?]
     -H "Authorization: Bearer ${VERCEL_TOKEN}" "${API}${path}${full:+?$full}"
 }
 
+# Team-owned projects must be queried with their teamId. Use VERCEL_TEAM_ID when given, otherwise
+# read it from the project (its accountId is the owning team's id).
+if [[ -z "$TEAM_QS" ]]; then
+  account_id="$(api GET "/v9/projects/${VERCEL_PROJECT_ID}" | jq -r '.accountId // empty')"
+  if [[ "$account_id" == team_* ]]; then
+    TEAM_QS="teamId=${account_id}"
+    echo "Using team scope ${account_id} (taken from the project; VERCEL_TEAM_ID was not set)."
+  fi
+fi
+
 WAIT_FOR_SHA="${WAIT_FOR_SHA:-}"
 WAIT_SECONDS="${WAIT_SECONDS:-900}"
 POLL_SECONDS="${POLL_SECONDS:-20}"
@@ -64,6 +74,7 @@ victims=()
 until_ts=""
 while :; do
   page="$(api GET "/v6/deployments" "projectId=${VERCEL_PROJECT_ID}&limit=100${until_ts:+&until=$until_ts}")"
+  echo "Listed $(jq '.deployments | length' <<<"$page") deployments (states: $(jq -r '[.deployments[] | (.state // .readyState // "unknown")] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$page"))"
   while IFS= read -r uid; do
     [[ -n "$uid" ]] && victims+=("$uid")
   done < <(jq -r --arg cur "$current_id" --argjson created "$current_created" '
@@ -76,6 +87,9 @@ while :; do
 done
 
 echo "Deployments to delete: ${#victims[@]}"
+if [[ ${#victims[@]} -eq 0 ]]; then
+  echo "Nothing older than the live deployment (created ${current_created}) was found in the listing above."
+fi
 failed=0
 for uid in "${victims[@]}"; do
   if [[ "$DRY_RUN" == "true" ]]; then
