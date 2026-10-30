@@ -2,7 +2,10 @@
 # Deletes every Vercel deployment (Preview and Production) of the project that is
 # older than the project's current production deployment, once that deployment is READY.
 #
-# Required env: VERCEL_TOKEN, VERCEL_PROJECT_ID     Optional: VERCEL_TEAM_ID, DRY_RUN=true, VERCEL_API
+# Required env: VERCEL_TOKEN, VERCEL_PROJECT_ID
+# Optional env: VERCEL_TEAM_ID, DRY_RUN=true, VERCEL_API,
+#               WAIT_FOR_SHA (wait until the production deployment of this git commit is READY),
+#               WAIT_SECONDS (max wait, default 900), POLL_SECONDS (default 20)
 # Safety rules:
 #   - nothing is deleted unless the current production deployment is READY (live);
 #   - the current production deployment and anything newer or still building is kept;
@@ -23,20 +26,40 @@ api() { # method path [query-string-without-leading-?]
     -H "Authorization: Bearer ${VERCEL_TOKEN}" "${API}${path}${full:+?$full}"
 }
 
-current_id="$(api GET "/v9/projects/${VERCEL_PROJECT_ID}" | jq -r '.targets.production.id // empty')"
-if [[ -z "$current_id" ]]; then
-  echo "Project has no production deployment; nothing to do."
-  exit 0
-fi
+WAIT_FOR_SHA="${WAIT_FOR_SHA:-}"
+WAIT_SECONDS="${WAIT_SECONDS:-900}"
+POLL_SECONDS="${POLL_SECONDS:-20}"
+deadline=$((SECONDS + WAIT_SECONDS))
 
-current="$(api GET "/v13/deployments/${current_id}")"
-state="$(jq -r '.readyState // .status' <<<"$current")"
-current_created="$(jq -r '.createdAt' <<<"$current")"
-if [[ "$state" != "READY" ]]; then
-  echo "Current production deployment ${current_id} is ${state}, not READY; refusing to delete anything."
-  exit 0
-fi
-echo "Current production deployment: ${current_id} (created ${current_created}, READY)"
+# Wait (when asked) for the production deployment of WAIT_FOR_SHA to become READY.
+while :; do
+  current_id="$(api GET "/v9/projects/${VERCEL_PROJECT_ID}" | jq -r '.targets.production.id // empty')"
+  if [[ -z "$current_id" ]]; then
+    echo "Project has no production deployment; nothing to do."
+    exit 0
+  fi
+  current="$(api GET "/v13/deployments/${current_id}")"
+  state="$(jq -r '.readyState // .status' <<<"$current")"
+  sha="$(jq -r '.meta.githubCommitSha // empty' <<<"$current")"
+  current_created="$(jq -r '.createdAt' <<<"$current")"
+
+  if [[ -z "$WAIT_FOR_SHA" || "$sha" == "$WAIT_FOR_SHA" ]]; then
+    if [[ "$state" == "READY" ]]; then
+      break
+    fi
+    if [[ -z "$WAIT_FOR_SHA" ]]; then
+      echo "Current production deployment ${current_id} is ${state}, not READY; refusing to delete anything."
+      exit 0
+    fi
+  fi
+  if (( SECONDS >= deadline )); then
+    echo "Timed out after ${WAIT_SECONDS}s: production is ${current_id} (${state}, commit ${sha:-unknown}), wanted a READY deployment of ${WAIT_FOR_SHA}." >&2
+    exit 1
+  fi
+  echo "Waiting for production deployment of ${WAIT_FOR_SHA:0:7} (currently ${current_id}: ${state}, commit ${sha:0:7})..."
+  sleep "$POLL_SECONDS"
+done
+echo "Current production deployment: ${current_id} (commit ${sha:0:7}, created ${current_created}, READY)"
 
 victims=()
 until_ts=""
