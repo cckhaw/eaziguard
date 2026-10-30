@@ -85,7 +85,7 @@ npm run demo               # http://localhost:3000 with sample alerts
 npm run demo -- healthy    # all-green variant
 ```
 
-**Deployment hygiene (already configured).** `app/vercel.json` sets `git.deploymentEnabled` so only `main` deploys; branches and pull requests
+**Deployment hygiene (already configured).** the repository-root `vercel.json` sets `git.deploymentEnabled` so only `main` deploys (Vercel's Git integration reads it from the repo root, not from the `app` Root Directory); branches and pull requests
 create no Preview deployments. On every push to `main` that changes `app/` (the only pushes Vercel builds), the GitHub Action
 `.github/workflows/cleanup-vercel-deployments.yml` runs `scripts/cleanup-vercel-deployments.sh`, which deletes every older Preview and Production
 deployment of the project once that push's production deployment is READY (the live one, newer ones and in-progress builds are kept; it gives up without deleting after 15 minutes).

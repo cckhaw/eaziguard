@@ -4,12 +4,6 @@
   "installCommand": "npm ci",
   "buildCommand": "npm run build",
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- .",
-  "git": {
-    "deploymentEnabled": {
-      "main": true,
-      "*": false
-    }
-  },
   "functions": {
     "src/app/api/metrics/route.ts": {
       "maxDuration": 15
