@@ -356,6 +356,13 @@ export default function DashboardPage() {
         </div>
       </header>
 
+      {data?.demo && (
+        <div role="note" className="mt-4 flex items-start gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200">
+          <Activity className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <span>Demo mode: all values below are sample data, not live network monitoring.</span>
+        </div>
+      )}
+
       {state.kind === "loading" && (
         <div className="mt-16 flex items-center justify-center gap-2 text-slate-500" role="status">
           <RefreshCw className="h-5 w-5 animate-spin" aria-hidden /> Loading campus status…

@@ -52,6 +52,8 @@ export interface EdgeProbeZone {
 
 export interface MetricsResponse {
   generatedAt: string;
+  /** true when the data is built-in sample data (DEMO_MODE), not real monitoring. */
+  demo?: boolean;
   /** true when some (not all) Prometheus queries failed. */
   degraded: boolean;
   failedQueries: number;

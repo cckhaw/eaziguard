@@ -306,6 +306,7 @@ async function buildSnapshot(config: BackendConfig): Promise<MetricsResponse> {
 
   return {
     generatedAt: new Date().toISOString(),
+    demo: config.demo === true,
     degraded: q.failed > 0 || !alertsResult.ok,
     failedQueries: q.failed + (alertsResult.ok ? 0 : 1),
     overall: overallStatus(components.map((c) => c.status)),
