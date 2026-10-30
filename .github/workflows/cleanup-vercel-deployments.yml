@@ -1,5 +1,9 @@
-# After a production deployment on Vercel finishes successfully, delete all older
+# After the production deployment for a push to main is READY on Vercel, delete all older
 # Preview and Production deployments of the project.
+#
+# Triggered by the push itself (not by Vercel events, which this repo does not receive) and
+# restricted to app/ because pushes that leave app/ unchanged are skipped by Vercel
+# (ignoreCommand in app/vercel.json) and would never produce a deployment to wait for.
 #
 # One-time setup (Settings -> Secrets and variables -> Actions -> Secrets):
 #   VERCEL_TOKEN        a Vercel access token (vercel.com/account/tokens), scoped to the team
@@ -8,7 +12,10 @@
 name: Clean up old Vercel deployments
 
 on:
-  deployment_status:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -25,13 +32,8 @@ concurrency:
 
 jobs:
   cleanup:
-    # Vercel reports deployment_status events; act only on a finished production deploy.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.deployment_status.state == 'success' &&
-       github.event.deployment_status.environment == 'Production')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,5 +44,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          WAIT_FOR_SHA: ${{ github.event_name == 'push' && github.sha || '' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
         run: ./scripts/cleanup-vercel-deployments.sh
