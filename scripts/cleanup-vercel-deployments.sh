@@ -55,7 +55,7 @@ while :; do
     current_id=""; current_created=0; sha=""
   else
     current_id="$(jq -r '.uid' <<<"$live")"
-    current_created="$(jq -r '.created' <<<"$live")"
+    current_created="$(jq -r '((.created // .createdAt) | tonumber)' <<<"$live")"
     sha="$(jq -r '.meta.githubCommitSha // empty' <<<"$live")"
     if [[ -z "$WAIT_FOR_SHA" || "$sha" == "$WAIT_FOR_SHA" ]]; then
       break
@@ -74,13 +74,16 @@ victims=()
 until_ts=""
 while :; do
   page="$(api GET "/v6/deployments" "projectId=${VERCEL_PROJECT_ID}&limit=100${until_ts:+&until=$until_ts}")"
+  echo "First entry shape: $(jq -c '.deployments[0] // {} | {uid, created: (.created | type), createdAt: (.createdAt | type), state}' <<<"$page")"
   echo "Listed $(jq '.deployments | length' <<<"$page") deployments (states: $(jq -r '[.deployments[] | (.state // .readyState // "unknown")] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$page"))"
   while IFS= read -r uid; do
     [[ -n "$uid" ]] && victims+=("$uid")
   done < <(jq -r --arg cur "$current_id" --argjson created "$current_created" '
       .deployments[]
-      | select(.uid != $cur and .created < $created and (.state // .readyState) as $s
-               | ($s == "READY" or $s == "ERROR" or $s == "CANCELED"))
+      | (try ((.created // .createdAt) | tonumber) catch null) as $c
+      | (.state // .readyState // "") as $s
+      | select(.uid != $cur and $c != null and $c < $created
+               and ($s == "READY" or $s == "ERROR" or $s == "CANCELED"))
       | .uid' <<<"$page")
   until_ts="$(jq -r '.pagination.next // empty' <<<"$page")"
   [[ -z "$until_ts" ]] && break
