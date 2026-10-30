@@ -82,6 +82,10 @@ npm run demo               # http://localhost:3000 with sample alerts
 npm run demo -- healthy    # all-green variant
 ```
 
+Show it on Vercel without a backend: add the environment variable `DEMO_MODE=true` (Production or Preview) and redeploy.
+The page then serves built-in sample data under a "Demo mode" banner and ignores `PROMETHEUS_URL`/`PROMETHEUS_BEARER_TOKEN`.
+Remove the variable (or set it to `false`) once the real backend is connected, and keep the Basic-auth variables set so the demo isn't public.
+
 Local development:
 
 ```bash

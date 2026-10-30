@@ -4,12 +4,16 @@
 // to the Next.js route, and only the route talks to Prometheus (through the
 // Caddy gateway described in docker/caddy/Caddyfile).
 
+import { demoAlerts, demoQuery } from "./demo.ts";
+
 export class BackendConfigError extends Error {}
 export class BackendRequestError extends Error {}
 
 export interface BackendConfig {
   baseUrl: string;
   token: string;
+  /** DEMO_MODE: serve built-in sample data instead of contacting Prometheus. */
+  demo?: boolean;
 }
 
 export interface VectorSample {
@@ -22,6 +26,10 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /** Validates PROMETHEUS_URL / PROMETHEUS_BEARER_TOKEN; throws BackendConfigError with an operator-facing message. */
 export function readBackendConfig(env: NodeJS.ProcessEnv = process.env): BackendConfig {
+  if (env.DEMO_MODE === "true") {
+    return { baseUrl: "demo", token: "", demo: true };
+  }
+
   const rawUrl = env.PROMETHEUS_URL?.trim();
   if (!rawUrl) {
     throw new BackendConfigError("PROMETHEUS_URL is not set");
@@ -102,6 +110,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Runs an instant query and returns every sample of the resulting vector. */
 export async function queryVector(config: BackendConfig, query: string): Promise<VectorSample[]> {
+  if (config.demo) return demoQuery(query);
   const data = await call(config, "/api/v1/query", new URLSearchParams({ query }));
   if (!isRecord(data) || data.resultType !== "vector" || !Array.isArray(data.result)) {
     throw new BackendRequestError("unexpected query result shape");
@@ -139,6 +148,7 @@ function stringMap(value: unknown): Record<string, string> {
 
 /** GET /api/v1/alerts: every pending or firing alert. */
 export async function fetchAlerts(config: BackendConfig): Promise<RawAlert[]> {
+  if (config.demo) return demoAlerts();
   const data = await call(config, "/api/v1/alerts");
   if (!isRecord(data) || !Array.isArray(data.alerts)) {
     throw new BackendRequestError("unexpected alerts result shape");
