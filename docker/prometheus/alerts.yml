@@ -359,7 +359,7 @@ groups:
   - name: campus-platform
     rules:
       - alert: MonitoringTargetDown
-        expr: up{job=~"node|blackbox-exporter|snmp-exporter|vector"} == 0
+        expr: up{job=~"node|blackbox-exporter|snmp-exporter|vector|alertmanager|notifier"} == 0
         for: 3m
         labels:
           severity: warning
@@ -379,3 +379,22 @@ groups:
         annotations:
           summary: "Monitoring server root disk below 15% free"
           description: "Prometheus retention or syslog files may be filling the disk."
+
+      - alert: NotificationsNotConfigured
+        expr: sum(notifier_channel_enabled) == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "No notification channel is configured"
+          description: "Email, SMS and WhatsApp are all disabled in the notifier, so alerts only appear on the dashboard. Set the SMTP_* and/or TWILIO_* variables in docker/.env."
+
+      - alert: NotificationDeliveryFailing
+        expr: increase(notifier_messages_failed_total[15m]) > 0
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "{{ $labels.channel }} notifications are failing"
+          description: "The notifier could not deliver {{ $value | printf \"%.0f\" }} {{ $labels.channel }} message(s) in the last 15 minutes. Check `docker compose logs notifier` for the provider's error."

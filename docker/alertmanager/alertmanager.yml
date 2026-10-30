@@ -1,0 +1,37 @@
+# Alertmanager groups, de-duplicates and silences alerts, then hands each group to the
+# notifier service, which sends email, SMS and WhatsApp (see notifier/notifier.py).
+# No credentials live here: they are all in the notifier's environment (.env).
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: notifier
+  # One notification per alert name and component: ten APs going offline arrive as one message.
+  group_by: [alertname, component]
+  group_wait: 30s        # collect related alerts before the first message
+  group_interval: 5m     # how soon new alerts joining a group are sent
+  repeat_interval: 4h    # re-send a still-firing group this often
+  routes:
+    # Critical alerts go out quickly and are repeated more often.
+    - matchers: [severity="critical"]
+      receiver: notifier
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: notifier
+    webhook_configs:
+      - url: http://notifier:9099/alerts
+        send_resolved: true
+        max_alerts: 20
+
+inhibit_rules:
+  # A scope that is 95 % full does not also need the 85 % warning.
+  - source_matchers: [alertname="DHCPPoolExhaustionCritical"]
+    target_matchers: [alertname="DHCPPoolExhaustionWarning"]
+    equal: [subnet]
+  # A switch that is unreachable explains its SNMP polling failure.
+  - source_matchers: [alertname="SwitchUnreachable"]
+    target_matchers: [alertname="SNMPPollFailing"]
+    equal: [instance]

@@ -136,3 +136,57 @@ tests:
             exp_annotations:
               summary: "crc on 10.0.1.1 Te1/0/1 (1.00/s)"
               description: "Port Te1/0/1 on 10.0.1.1 has had sustained crc for 10 minutes. CRC errors normally mean a bad cable, SFP or duplex mismatch; discards point to congestion or an oversubscribed uplink."
+
+  # ------------------------------------------------ notification pipeline health
+  - interval: 1m
+    input_series:
+      # No channel enabled at all.
+      - series: 'notifier_channel_enabled{job="notifier", channel="email"}'
+        values: '0x30'
+      - series: 'notifier_channel_enabled{job="notifier", channel="sms"}'
+        values: '0x30'
+      - series: 'notifier_channel_enabled{job="notifier", channel="whatsapp"}'
+        values: '0x30'
+      # Three SMS deliveries fail at minute 5, then no more.
+      - series: 'notifier_messages_failed_total{job="notifier", channel="sms"}'
+        values: '0x4 3x26'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NotificationsNotConfigured
+        exp_alerts: []             # needs 10 minutes
+      - eval_time: 15m
+        alertname: NotificationsNotConfigured
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: platform
+            exp_annotations:
+              summary: "No notification channel is configured"
+              description: "Email, SMS and WhatsApp are all disabled in the notifier, so alerts only appear on the dashboard. Set the SMTP_* and/or TWILIO_* variables in docker/.env."
+      - eval_time: 12m
+        alertname: NotificationDeliveryFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: platform
+              channel: sms
+              job: notifier
+            exp_annotations:
+              summary: "sms notifications are failing"
+              description: "The notifier could not deliver 3 sms message(s) in the last 15 minutes. Check `docker compose logs notifier` for the provider's error."
+
+  - interval: 1m
+    input_series:
+      - series: 'notifier_channel_enabled{job="notifier", channel="email"}'
+        values: '1x30'
+      - series: 'notifier_channel_enabled{job="notifier", channel="sms"}'
+        values: '0x30'
+      - series: 'notifier_messages_failed_total{job="notifier", channel="email"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NotificationsNotConfigured
+        exp_alerts: []             # one working channel is enough
+      - eval_time: 20m
+        alertname: NotificationDeliveryFailing
+        exp_alerts: []

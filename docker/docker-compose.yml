@@ -21,6 +21,7 @@ volumes:
   vector-logs:
   caddy-data:
   caddy-config:
+  alertmanager-data:
 
 x-restart: &restart
   restart: unless-stopped
@@ -161,6 +162,60 @@ services:
     networks: [monitoring]
     depends_on:
       - prometheus
+
+  # --------------------------------------------------------------------------
+  # Alert routing: Prometheus -> Alertmanager -> notifier -> email / SMS / WhatsApp
+  # Alertmanager's UI (silences) listens on 127.0.0.1:9093; reach it over an SSH tunnel.
+  # --------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    <<: [*restart, *logging]
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=      # single instance: no HA gossip
+      - --web.external-url=${ALERTMANAGER_EXTERNAL_URL:-http://localhost:9093}
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks: [monitoring]
+    depends_on:
+      - notifier
+
+  notifier:
+    build:
+      context: ./notifier
+    <<: [*restart, *logging]
+    environment:
+      NOTIFY_NAME: ${NOTIFY_NAME:-eaziguard}
+      DASHBOARD_URL: ${DASHBOARD_URL:-}
+      # Email (SMTP)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      EMAIL_TO: ${EMAIL_TO:-}
+      # SMS and WhatsApp (Twilio)
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      SMS_FROM: ${SMS_FROM:-}
+      TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
+      SMS_TO: ${SMS_TO:-}
+      WHATSAPP_FROM: ${WHATSAPP_FROM:-}
+      WHATSAPP_TO: ${WHATSAPP_TO:-}
+      TWILIO_WHATSAPP_CONTENT_SID: ${TWILIO_WHATSAPP_CONTENT_SID:-}
+      # Routing and limits
+      NOTIFY_EMAIL_MIN_SEVERITY: ${NOTIFY_EMAIL_MIN_SEVERITY:-warning}
+      NOTIFY_SMS_MIN_SEVERITY: ${NOTIFY_SMS_MIN_SEVERITY:-critical}
+      NOTIFY_WHATSAPP_MIN_SEVERITY: ${NOTIFY_WHATSAPP_MIN_SEVERITY:-critical}
+      NOTIFY_RESOLVED: ${NOTIFY_RESOLVED-email}
+      NOTIFY_SMS_MAX_PER_HOUR: ${NOTIFY_SMS_MAX_PER_HOUR:-20}
+      NOTIFY_WHATSAPP_MAX_PER_HOUR: ${NOTIFY_WHATSAPP_MAX_PER_HOUR:-20}
+    networks: [monitoring]
 
   # --------------------------------------------------------------------------
   # OPTIONAL: DHCP scope utilisation from an ISC Kea server.

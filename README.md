@@ -10,6 +10,7 @@ start filing tickets.
 [2. Campus server](#2-set-up-the-campus-server) ·
 [3. Connect Vercel to the server](#3-connect-vercel-and-the-backend-securely) ·
 [4. Raspberry Pi probes](#4-run-the-edge-probe-on-raspberry-pis) ·
+[5. Notifications](#5-email-sms-and-whatsapp-notifications) · [Interface](#the-interface) ·
 [Troubleshooting](#troubleshooting) · [Verification status](#verification-status)
 
 ## Architecture
@@ -19,7 +20,7 @@ It is a three-part system, deployed on three different kinds of machine:
 | Directory | Runs on | What it is |
 |-----------|---------|------------|
 | [`app/`](app) | Vercel | Next.js 15 + Tailwind dashboard: sign-in page, dashboard, and the `/api/metrics` proxy route |
-| [`docker/`](docker) | Campus server | Docker Compose stack: Prometheus, Grafana, Vector, SNMP exporter, Blackbox exporter, node-exporter, Caddy (+ optional Kea exporter) |
+| [`docker/`](docker) | Campus server | Docker Compose stack: Prometheus, Alertmanager, notifier (email, SMS, WhatsApp), Grafana, Vector, SNMP exporter, Blackbox exporter, node-exporter, Caddy (+ optional Kea exporter) |
 | [`edge-probe/`](edge-probe) | Raspberry Pi / mini PC in client zones | Python synthetic probe exposing Prometheus metrics on `:8000` |
 
 ```mermaid
@@ -38,6 +39,12 @@ flowchart LR
     VEC["Vector :514"]
     KEA["kea-exporter (optional)"]
     NODE["node-exporter"]
+    AM["Alertmanager<br/>127.0.0.1:9093"]
+    NOT["notifier :9099"]
+  end
+  subgraph OUT["Notifications"]
+    MAIL["Email (SMTP)"]
+    TW["Twilio: SMS + WhatsApp"]
   end
   subgraph CAMPUS["Campus network"]
     DEV["Gateway, switches, Wi-Fi controller + APs,<br/>DNS, DHCP, RADIUS, captive portal"]
@@ -56,6 +63,10 @@ flowchart LR
   KEA -.->|"Kea API 8000"| DEV
   PI -->|"DHCP, DNS, portal, RADIUS tests"| DEV
   P --> GR
+  P -->|"firing alerts"| AM
+  AM -->|"grouped, webhook"| NOT
+  NOT -->|"587 / 465"| MAIL
+  NOT -->|"HTTPS 443"| TW
   G -->|"push to main: build"| V
   G -->|"Actions: delete old deployments"| V
 ```
@@ -101,6 +112,11 @@ sequenceDiagram
 | Prometheus | Raspberry Pi probes | 8000 | Probe metrics | Campus network |
 | Raspberry Pi probes | DHCP · DNS · portal · RADIUS | 67/68 · 53 · 80/443 · 1812 | Tests from the client VLAN | Client VLANs |
 | Operator | Grafana | 3000 on 127.0.0.1 | Graphs and rule status | SSH tunnel only |
+| Prometheus | Alertmanager | 9093 | Firing alerts | Docker network |
+| Alertmanager | notifier | 9099 | Grouped alert webhooks | Docker network only |
+| Operator | Alertmanager | 9093 on 127.0.0.1 | Silences and alert groups | SSH tunnel only |
+| notifier | SMTP server | 587 (STARTTLS) or 465 | Alert email | Outbound from the server |
+| notifier | Twilio API | 443 | SMS and WhatsApp | Outbound from the server |
 | GitHub Actions | Vercel API | 443 | Delete older deployments | Internet, token required |
 
 ## What is alerted on
@@ -122,6 +138,7 @@ slow or failing DNS/DHCP from each client zone, silent or stale edge probes, lin
 and the health of the monitoring stack itself.
 
 Thresholds are deliberately conservative starting points. Tune them in `alerts.yml` after a week of data.
+Firing alerts are also sent by email, SMS and WhatsApp; see [section 5](#5-email-sms-and-whatsapp-notifications).
 
 ---
 
@@ -348,6 +365,62 @@ Notes:
   Access-Accept, -Reject and -Challenge as "server responded", measuring the round trip. Use a throw-away test account.
 - Tests: `cd edge-probe && pip install -r requirements.txt && python -m unittest discover -s tests -v`.
 
+## 5. Email, SMS and WhatsApp notifications
+
+Prometheus sends firing alerts to **Alertmanager**, which groups and de-duplicates them (ten APs going offline become one message), applies
+silences, and calls a small **notifier** service. The notifier decides which channel gets what and delivers it. Nothing is sent until you fill in the
+settings in `docker/.env`; each channel switches on only when all of its settings are present.
+
+| Channel | Provider | Needs |
+|---------|----------|-------|
+| Email | Any SMTP service (Google Workspace, Microsoft 365, SES, SendGrid ...) | `SMTP_HOST`, `SMTP_FROM`, `EMAIL_TO`, plus `SMTP_USER` / `SMTP_PASSWORD` for most services |
+| SMS | Twilio Programmable Messaging | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `SMS_TO`, and `SMS_FROM` (a Twilio number) or `TWILIO_MESSAGING_SERVICE_SID` |
+| WhatsApp | Twilio WhatsApp | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `WHATSAPP_FROM`, `WHATSAPP_TO` |
+
+Phone numbers use international format, for example `+14155550123`; lists are comma-separated.
+
+**Who receives what.** By default email gets warnings and critical alerts, while SMS and WhatsApp get critical alerts only
+(`NOTIFY_EMAIL_MIN_SEVERITY`, `NOTIFY_SMS_MIN_SEVERITY`, `NOTIFY_WHATSAPP_MIN_SEVERITY`). Only email gets "resolved" messages (`NOTIFY_RESOLVED`).
+SMS and WhatsApp are capped at 20 messages per hour each (`NOTIFY_SMS_MAX_PER_HOUR`, `NOTIFY_WHATSAPP_MAX_PER_HOUR`; every recipient counts as one),
+so a flapping alert cannot run up a bill. Critical alerts are sent after 10 seconds and repeated hourly; others wait 30 seconds and repeat every 4 hours
+(`docker/alertmanager/alertmanager.yml`).
+
+**Set it up**
+
+```bash
+cd docker
+$EDITOR .env                                   # the "Notifications" block at the bottom
+docker compose up -d --build                   # builds the notifier and starts Alertmanager
+docker compose run --rm notifier python notifier.py --check-config   # lists the channels that are switched on
+docker compose run --rm notifier python notifier.py --test           # sends a test alert through every enabled channel
+```
+
+- **Twilio.** Create an account at console.twilio.com and copy the Account SID and Auth Token. Trial accounts can only message numbers you have verified.
+  In the United States, SMS from a regular number generally needs carrier registration (A2P 10DLC) before messages are delivered reliably; other countries have their own sender rules.
+- **WhatsApp.** For a quick test, use Twilio's WhatsApp sandbox: set `WHATSAPP_FROM=+14155238886` and have each recipient send the join code shown in the Twilio console.
+  For real use, register a WhatsApp sender in Twilio. WhatsApp only allows free-form messages to someone who wrote to you in the last 24 hours, so alerts to staff
+  need an approved template with one variable (`{{1}}`); put its Content SID in `TWILIO_WHATSAPP_CONTENT_SID` and the notifier fills the variable with the alert text.
+- **Email.** Use an app password or a dedicated SMTP credential, not a person's login. `SMTP_SECURITY=starttls` (port 587), `ssl` (465) or `none` (trusted internal relay only).
+- **Silencing.** Open Alertmanager over an SSH tunnel (`ssh -L 9093:127.0.0.1:9093 user@server`, then http://localhost:9093) to silence an alert during maintenance.
+- **Failure behaviour.** If every channel that tries to send fails, the notifier answers with an error and Alertmanager retries. If only some fail, it does not retry (that would
+  send duplicates to the channels that worked) and the failure is logged and counted. Two alerts watch the pipeline itself: `NotificationsNotConfigured` and `NotificationDeliveryFailing`.
+  Phone numbers are masked in logs and credentials are never logged.
+
+## The interface
+
+The dashboard follows Apple's Human Interface Guidelines, adapted for the web, and was checked against them with the HIG Compliance Auditor skill
+by Omraj Kumar (https://om.bearblog.dev/projects).
+
+- **Structure.** A translucent sidebar on wide screens and a bottom tab bar on phones, with three sections: Overview, Alerts and Client zones. The title is large at the top and
+  collapses into the toolbar as you scroll. Content sits on solid grouped lists; the frosted material is used only on the controls (sidebar, tab bar, toolbar).
+- **Colour and text.** Semantic light and dark palettes (Dark Mode uses a black base with lighter raised surfaces), an SF-style type scale in `rem` with the HIG tracking, and status colours
+  chosen to reach 4.5:1 contrast. Status is always a filled glyph plus a word, never colour alone.
+- **Accessibility.** Every control is at least 44 by 44 points; text scales to 200% with no clipping or sideways scrolling; Reduce Motion, Reduce Transparency and Increase Contrast are honoured;
+  there is a skip link, proper landmarks, and a polite screen-reader announcement when the status changes.
+- **On iPhone and iPad.** Safe-area insets keep content clear of the notch and home indicator. Use Share, then Add to Home Screen, to open it full screen with the eaziguard icon
+  (`manifest.webmanifest`, `apple-icon.png`, theme colours for light and dark).
+- **Icons.** Lucide, an open-source outlined set, with filled variants for the active tab. SF Symbols are deliberately not used: Apple's licence does not allow them on public websites.
+
 ---
 
 ## Troubleshooting
@@ -362,6 +435,9 @@ Notes:
 | Cards show "No data" | The matching targets file is empty or the exporter cannot reach the devices; check http://localhost:9090/targets over the SSH tunnel. |
 | The page says "Demo mode" | `DEMO_MODE=true` is still set on Vercel. |
 | DHCP card shows "—" for scope usage | No Kea exporter (or equivalent metrics) is configured. |
+| `--check-config` lists no channels | A channel needs all its settings; the log line "X is NOT enabled; missing: ..." names what is absent. |
+| Test message sent but nothing arrives | Check `docker compose logs notifier`: Twilio trial accounts reach only verified numbers, WhatsApp needs the sandbox join or an approved template, and some SMTP services block the sender address. |
+| Alerts show on the dashboard but nobody is notified | The alert may be below the channel's severity floor, silenced in Alertmanager, or the channel may have hit its hourly cap (`notifier_messages_rate_limited_total`). |
 | Cleanup workflow says "Deployments to delete: 0" | Nothing is older than the live deployment. Check the listing printed in the run log. |
 
 ## Verification status
@@ -375,11 +451,15 @@ What was actually run while building this repository:
   (healthy, degraded, wrong-token, unconfigured, non-HTTPS and sign-in paths), including the sign-in flow in a real browser, plus light, dark and phone-width screenshots.
 - The Vercel deployment and the cleanup workflow: the dashboard builds and deploys from `main`; the cleanup ran as a dry run and then for real on GitHub Actions,
   deleting 20 older deployments and keeping the live one (it needed several fixes first, all merged).
+- Notifications: 28 tests of the notifier against an in-process fake SMTP server and fake Twilio API (routing by severity, SMS/WhatsApp/email formatting, hourly cap,
+  partial and total failure, masked logs, the `--test` command); `promtool test rules` covers the two new pipeline alerts.
+- Interface: `tsc`, ESLint and a production build; automated browser checks for touch targets under 44 points (none), horizontal overflow and clipped text at 200% text size
+  (none, phone and desktop), the frosted toolbar after scrolling, and console errors (none); light, dark, phone and desktop screenshots of every screen.
 - `docker compose config` parses the stack.
 
-Not exercised, because there was no Docker daemon or lab network: the containers themselves, the Caddyfile and Vector pipeline
+Not exercised, because there was no Docker daemon, lab network or provider account: the containers themselves, real delivery through an SMTP server, Twilio SMS and WhatsApp, the Alertmanager config (checked as YAML only, not with `amtool`), the Caddyfile and Vector pipeline
 (`vector validate` was not run), `snmp.yml` against real devices, the Blackbox modules against real servers, and the Kea exporter. Run `docker compose up -d` and
 work through the verification steps in section 2 on first deployment.
 
 Known limits: UDP checks from Blackbox (`udp_radius_auth`, `udp_dhcp_server`) can only prove that a datagram was sent; the authoritative AAA and DHCP signals come from the edge
-probes. No Alertmanager is included, so alerts are visible in the dashboard, Prometheus and Grafana but not pushed to email/Slack/pager. Add Alertmanager when you are ready to route notifications.
+probes. The notifier covers email, SMS and WhatsApp only; Slack or a pager service would need another receiver in `alertmanager.yml`.
