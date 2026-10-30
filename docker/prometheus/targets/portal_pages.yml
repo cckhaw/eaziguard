@@ -1,0 +1,7 @@
+# Captive portal login pages (module http_portal_page).
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["https://portal.campus.example.edu/login"]
+  labels:
+    role: captive-portal
+    check: login-page

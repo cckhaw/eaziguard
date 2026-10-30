@@ -1,0 +1,381 @@
+# CampusNet-Sentinel alert and recording rules.
+#
+# Conventions
+#   severity  : critical | warning | info
+#   component : gateway | dns | dhcp | aaa | wifi | switch | portal | edge | platform
+# The dashboard (app/src/app/api/metrics/route.ts) derives each component's
+# status from the highest severity of its firing alerts, so keep those two
+# labels on every new rule.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Recording rules
+  # ---------------------------------------------------------------------------
+  - name: campus-recording
+    interval: 30s
+    rules:
+      # Fraction (0..1) of leases in use per DHCP subnet, from kea-exporter.
+      - record: campus:dhcp_scope_usage:ratio
+        expr: |
+          sum by (subnet, subnet_id) (kea_dhcp4_addresses_assigned_total)
+            /
+          sum by (subnet, subnet_id) (kea_dhcp4_addresses_total)
+
+      # Percentage of failed ICMP probes to the gateway over 3 minutes.
+      - record: campus:gateway_packet_loss:percent3m
+        expr: |
+          (1 - avg_over_time(probe_success{job="blackbox-icmp-gateway"}[3m])) * 100
+
+      # Per-port error/discard rate (events per second) on core + distribution switches.
+      - record: campus:switch_port_crc_errors:rate5m
+        expr: |
+          sum by (instance, ifName) (
+            rate(dot3StatsFCSErrors{job="snmp", role=~"core-switch|distribution-switch"}[5m])
+          )
+      - record: campus:switch_port_errors:rate5m
+        expr: |
+          sum by (instance, ifName) (
+            rate(ifInErrors{job="snmp", role=~"core-switch|distribution-switch"}[5m])
+            + on (instance, ifName) rate(ifOutErrors{job="snmp", role=~"core-switch|distribution-switch"}[5m])
+          )
+      - record: campus:switch_port_discards:rate5m
+        expr: |
+          sum by (instance, ifName) (
+            rate(ifInDiscards{job="snmp", role=~"core-switch|distribution-switch"}[5m])
+            + on (instance, ifName) rate(ifOutDiscards{job="snmp", role=~"core-switch|distribution-switch"}[5m])
+          )
+
+  # ---------------------------------------------------------------------------
+  # Required early-warning alerts
+  # ---------------------------------------------------------------------------
+  - name: campus-early-warning
+    rules:
+      - alert: DHCPPoolExhaustionWarning
+        expr: campus:dhcp_scope_usage:ratio > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: dhcp
+        annotations:
+          summary: "DHCP scope {{ $labels.subnet }} is {{ $value | humanizePercentage }} full"
+          description: >-
+            Scope {{ $labels.subnet }} (id {{ $labels.subnet_id }}) has stayed above 85% lease usage
+            for 5 minutes. Clients will start failing to obtain an address if the pool fills.
+            Shorten lease times, widen the pool, or look for a DHCP starvation attack.
+
+      - alert: DHCPPoolExhaustionCritical
+        expr: campus:dhcp_scope_usage:ratio > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          component: dhcp
+        annotations:
+          summary: "DHCP scope {{ $labels.subnet }} is almost exhausted ({{ $value | humanizePercentage }})"
+          description: "Scope {{ $labels.subnet }} has less than 5% free leases; new clients are about to be refused."
+
+      - alert: APOffline
+        # Probed every 15s: six consecutive failures = no heartbeat for 90s.
+        expr: probe_success{job="blackbox-icmp-ap"} == 0
+        for: 90s
+        labels:
+          severity: critical
+          component: wifi
+        annotations:
+          summary: "Access point {{ $labels.ap_name }} ({{ $labels.instance }}) offline"
+          description: >-
+            No ICMP heartbeat from {{ $labels.instance }}
+            in {{ $labels.building }} for over 90 seconds.
+            Check PoE on the switch port and the uplink.
+
+      - alert: HighGatewayPacketLoss
+        expr: campus:gateway_packet_loss:percent3m > 1
+        for: 1m
+        labels:
+          severity: critical
+          component: gateway
+        annotations:
+          summary: "{{ $value | printf \"%.1f\" }}% packet loss to gateway {{ $labels.instance }}"
+          description: >-
+            More than 1% of probes to the internet gateway/firewall were lost over the last
+            3 minutes. Check the ISP circuit, firewall CPU/session table and uplink errors.
+
+      - alert: RADIUSAuthLatency
+        # Measured by the edge probes with a real Access-Request round trip.
+        expr: max by (zone, server) (edgeprobe_radius_response_seconds) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          component: aaa
+        annotations:
+          summary: "RADIUS server {{ $labels.server }} slow from {{ $labels.zone }} ({{ $value | humanizeDuration }})"
+          description: >-
+            AAA response time has exceeded 500 ms for 3 minutes as seen from zone {{ $labels.zone }}.
+            Slow authentication delays 802.1X/Wi-Fi association; check the directory/back-end database
+            and RADIUS server load.
+
+      - alert: CoreSwitchInterfaceErrors
+        expr: |
+          (
+            label_replace(campus:switch_port_crc_errors:rate5m > 0.1, "error_type", "crc", "", "")
+          )
+          or
+          (
+            label_replace(campus:switch_port_errors:rate5m > 0.5, "error_type", "input/output errors", "", "")
+          )
+          or
+          (
+            label_replace(campus:switch_port_discards:rate5m > 5, "error_type", "discards", "", "")
+          )
+        for: 10m
+        labels:
+          severity: warning
+          component: switch
+        annotations:
+          summary: "{{ $labels.error_type }} on {{ $labels.instance }} {{ $labels.ifName }} ({{ $value | printf \"%.2f\" }}/s)"
+          description: >-
+            Port {{ $labels.ifName }} on {{ $labels.instance }} has had sustained {{ $labels.error_type }}
+            for 10 minutes. CRC errors normally mean a bad cable, SFP or duplex mismatch; discards
+            point to congestion or an oversubscribed uplink.
+
+  # ---------------------------------------------------------------------------
+  # Supporting alerts (device / service availability)
+  # ---------------------------------------------------------------------------
+  - name: campus-availability
+    rules:
+      - alert: SwitchUnreachable
+        expr: probe_success{job="blackbox-icmp-infra", role=~"core-switch|distribution-switch"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: switch
+        annotations:
+          summary: "Switch {{ $labels.instance }} unreachable"
+          description: "{{ $labels.instance }} ({{ $labels.role }}) has not answered ICMP for 1 minute."
+
+      - alert: SNMPPollFailing
+        expr: up{job="snmp"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: switch
+        annotations:
+          summary: "SNMP polling of {{ $labels.instance }} is failing"
+          description: "snmp-exporter could not walk {{ $labels.instance }} for 5 minutes. Check the community/credentials and ACLs."
+
+      - alert: WirelessControllerUnreachable
+        expr: probe_success{job="blackbox-icmp-infra", role="wifi-controller"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: wifi
+        annotations:
+          summary: "Wi-Fi controller {{ $labels.instance }} unreachable"
+          description: "All APs depend on this controller; investigate immediately."
+
+      - alert: DNSServerFailing
+        expr: probe_success{job=~"blackbox-dns-(internal|external)"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: dns
+        annotations:
+          summary: "DNS server {{ $labels.instance }} failing lookups ({{ $labels.job }})"
+          description: "Resolver {{ $labels.instance }} has returned errors or timeouts for 2 minutes."
+
+      - alert: DNSLookupSlow
+        expr: probe_duration_seconds{job=~"blackbox-dns-(internal|external)"} > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          component: dns
+        annotations:
+          summary: "DNS lookups via {{ $labels.instance }} taking {{ $value | humanizeDuration }}"
+          description: "Lookup latency above 250 ms for 5 minutes."
+
+      - alert: DHCPServerUnreachable
+        expr: probe_success{job="blackbox-icmp-infra", role="dhcp-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: dhcp
+        annotations:
+          summary: "DHCP server {{ $labels.instance }} unreachable"
+          description: "{{ $labels.instance }} is not answering ICMP."
+
+      - alert: RADIUSServerUnreachable
+        expr: probe_success{job="blackbox-icmp-infra", role="radius-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: aaa
+        annotations:
+          summary: "RADIUS server {{ $labels.instance }} unreachable"
+          description: "{{ $labels.instance }} is not answering ICMP; 802.1X/Wi-Fi logins will fail."
+
+      - alert: CaptivePortalNotRedirecting
+        expr: probe_success{job="blackbox-http-portal-redirect"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: portal
+        annotations:
+          summary: "Captive portal redirect failing on {{ $labels.instance }}"
+          description: >-
+            An unauthenticated request to {{ $labels.instance }} was not answered with an HTTP redirect.
+            Guests cannot reach the login page.
+
+      - alert: CaptivePortalPageDown
+        expr: probe_success{job="blackbox-http-portal-page"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: portal
+        annotations:
+          summary: "Captive portal page {{ $labels.instance }} is down"
+          description: "The portal login page did not return HTTP 200 over TLS."
+
+      - alert: CaptivePortalCertificateExpiring
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-http-portal-page"} - time()) < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+          component: portal
+        annotations:
+          summary: "Portal certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}"
+          description: "Renew the captive portal TLS certificate."
+
+  # ---------------------------------------------------------------------------
+  # Edge probe (client-zone vantage point) alerts
+  # ---------------------------------------------------------------------------
+  - name: campus-edge-probes
+    rules:
+      - alert: EdgeProbeDown
+        expr: up{job="edge-probe"} == 0
+        for: 3m
+        labels:
+          severity: warning
+          component: edge
+        annotations:
+          summary: "Edge probe {{ $labels.instance }} ({{ $labels.zone }}) is not reporting"
+          description: "The probe in {{ $labels.zone }} has not been scrapeable for 3 minutes. Check power, network and the edge-probe service."
+
+      - alert: EdgeProbeStale
+        expr: time() - edgeprobe_last_run_timestamp_seconds > 300
+        for: 1m
+        labels:
+          severity: warning
+          component: edge
+        annotations:
+          summary: "Edge probe in {{ $labels.zone }} stopped completing test cycles"
+          description: "The probe answers scrapes but its last test cycle finished more than 5 minutes ago."
+
+      - alert: DHCPLeaseFailureFromZone
+        expr: edgeprobe_dhcp_success == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: dhcp
+        annotations:
+          summary: "DHCP lease acquisition failing in {{ $labels.zone }}"
+          description: "No DHCP offer was received by the probe in {{ $labels.zone }} for 3 minutes. Check the VLAN helper-address / relay and DHCP server."
+
+      - alert: DHCPLeaseSlow
+        expr: edgeprobe_dhcp_offer_seconds > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: dhcp
+        annotations:
+          summary: "DHCP offers take {{ $value | humanizeDuration }} in {{ $labels.zone }}"
+          description: "Lease acquisition latency above 2 seconds for 5 minutes."
+
+      - alert: ZoneDNSFailure
+        expr: max by (zone, resolver) (edgeprobe_dns_success == 0)
+        for: 3m
+        labels:
+          severity: critical
+          component: dns
+        annotations:
+          summary: "Resolver {{ $labels.resolver }} failing from {{ $labels.zone }}"
+          description: "The probe in {{ $labels.zone }} cannot resolve names via {{ $labels.resolver }}."
+
+      - alert: ZoneDNSSlow
+        expr: max by (zone, resolver) (edgeprobe_dns_resolution_seconds) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: dns
+        annotations:
+          summary: "DNS via {{ $labels.resolver }} takes {{ $value | humanizeDuration }} in {{ $labels.zone }}"
+          description: "Resolution latency above 500 ms for 5 minutes."
+
+      - alert: ZoneCaptivePortalFailure
+        expr: edgeprobe_captive_portal_up == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: portal
+        annotations:
+          summary: "Captive portal broken as seen from {{ $labels.zone }}"
+          description: "The probe in {{ $labels.zone }} sees no portal redirect or the portal page does not load."
+
+      - alert: ZoneRADIUSFailure
+        expr: edgeprobe_radius_success == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: aaa
+        annotations:
+          summary: "RADIUS server {{ $labels.server }} not answering probes from {{ $labels.zone }}"
+          description: "No Access-Accept/Reject came back within the probe timeout."
+
+  # ---------------------------------------------------------------------------
+  # Syslog-derived alerts (Vector)
+  # ---------------------------------------------------------------------------
+  - name: campus-syslog
+    rules:
+      - alert: LinkFlapping
+        expr: sum by (host) (increase(campus_syslog_events_total{event_class="link_flap"}[10m])) >= 6
+        labels:
+          severity: warning
+          component: switch
+        annotations:
+          summary: "{{ $labels.host }} logged {{ $value | printf \"%.0f\" }} link up/down events in 10 minutes"
+          description: "A flapping port usually means a failing cable/optic or a looping device."
+
+      - alert: SyslogSilent
+        expr: absent(campus_syslog_events_total) or (sum(increase(campus_syslog_events_total[15m])) == 0)
+        for: 15m
+        labels:
+          severity: info
+          component: platform
+        annotations:
+          summary: "No syslog received for 15 minutes"
+          description: "Either the whole campus is quiet or devices stopped forwarding to this server on UDP/TCP 514."
+
+  # ---------------------------------------------------------------------------
+  # Monitoring platform self-health
+  # ---------------------------------------------------------------------------
+  - name: campus-platform
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up{job=~"node|blackbox-exporter|snmp-exporter|vector"} == 0
+        for: 3m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Monitoring component {{ $labels.job }} is down"
+          description: "{{ $labels.instance }} stopped answering scrapes; alerts that depend on it are blind."
+
+      - alert: MonitoringHostDiskLow
+        expr: |
+          node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|overlay|squashfs", mountpoint="/"}
+            / node_filesystem_size_bytes{job="node", fstype!~"tmpfs|overlay|squashfs", mountpoint="/"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Monitoring server root disk below 15% free"
+          description: "Prometheus retention or syslog files may be filling the disk."

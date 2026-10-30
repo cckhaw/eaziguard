@@ -1,0 +1,7 @@
+# Campus DNS resolvers (ICMP + DNS lookups on port 53).
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.0.53", "10.0.0.54"]
+  labels:
+    role: dns-server
+    site: main-campus

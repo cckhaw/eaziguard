@@ -1,0 +1,30 @@
+# TLS + bearer-token gate in front of Prometheus.
+# Only the read-only query endpoints used by the dashboard are exposed; the
+# admin/lifecycle APIs, /graph UI and remote-write stay unreachable.
+{
+	email {$ACME_EMAIL}
+}
+
+{$PROMETHEUS_PUBLIC_HOST} {
+	@authorized_api {
+		header Authorization "Bearer {$PROMETHEUS_BEARER_TOKEN}"
+		path /api/v1/query /api/v1/query_range /api/v1/alerts /api/v1/rules
+		method GET POST
+	}
+
+	handle @authorized_api {
+		reverse_proxy prometheus:9090
+	}
+
+	# Everything else, including wrong/missing tokens.
+	handle {
+		header Cache-Control "no-store"
+		respond "Unauthorized" 401
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}

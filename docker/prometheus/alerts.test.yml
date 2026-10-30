@@ -1,0 +1,138 @@
+# Unit tests for alerts.yml. Run from this directory:
+#   promtool test rules alerts.test.yml
+# (or: docker run --rm -v "$PWD":/w -w /w --entrypoint promtool prom/prometheus:v2.55.1 test rules alerts.test.yml)
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ---------------------------------------------------------------- APOffline
+  - interval: 15s
+    input_series:
+      # Dead after 2.5 minutes of heartbeats.
+      - series: 'probe_success{job="blackbox-icmp-ap", instance="10.10.1.21", role="ap", ap_name="ap-lib-1", building="Library"}'
+        values: '1x10 0x60'
+      # Healthy neighbour, and a brief 30-second blip that must not page anyone.
+      - series: 'probe_success{job="blackbox-icmp-ap", instance="10.10.1.22", role="ap", ap_name="ap-lib-2", building="Library"}'
+        values: '1x10 0x2 1x60'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: APOffline
+        exp_alerts: []            # still inside the 90 s grace period
+      - eval_time: 6m
+        alertname: APOffline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: wifi
+              job: blackbox-icmp-ap
+              instance: 10.10.1.21
+              role: ap
+              ap_name: ap-lib-1
+              building: Library
+            exp_annotations:
+              summary: "Access point ap-lib-1 (10.10.1.21) offline"
+              description: "No ICMP heartbeat from 10.10.1.21 in Library for over 90 seconds. Check PoE on the switch port and the uplink."
+
+  # ------------------------------------------------- HighGatewayPacketLoss
+  - interval: 5s
+    input_series:
+      # 5 minutes of total loss starting at t=500 s, healthy before and after.
+      - series: 'probe_success{job="blackbox-icmp-gateway", instance="10.0.0.1", role="gateway"}'
+        values: '1x100 0x60 1x300'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HighGatewayPacketLoss
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HighGatewayPacketLoss
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: gateway
+              job: blackbox-icmp-gateway
+              instance: 10.0.0.1
+              role: gateway
+            exp_annotations:
+              summary: "100.0% packet loss to gateway 10.0.0.1"
+              description: "More than 1% of probes to the internet gateway/firewall were lost over the last 3 minutes. Check the ISP circuit, firewall CPU/session table and uplink errors."
+      - eval_time: 20m   # window has slid past the outage: resolved
+        alertname: HighGatewayPacketLoss
+        exp_alerts: []
+
+  # ------------------------------------------------ DHCPPoolExhaustionWarning
+  - interval: 30s
+    input_series:
+      - series: 'kea_dhcp4_addresses_assigned_total{subnet="10.20.0.0/22", subnet_id="1", pool="10.20.0.10-10.20.3.250"}'
+        values: '900x60'
+      - series: 'kea_dhcp4_addresses_total{subnet="10.20.0.0/22", subnet_id="1", pool="10.20.0.10-10.20.3.250"}'
+        values: '1000x60'
+      - series: 'kea_dhcp4_addresses_assigned_total{subnet="10.30.0.0/24", subnet_id="2", pool="10.30.0.10-10.30.0.250"}'
+        values: '100x60'
+      - series: 'kea_dhcp4_addresses_total{subnet="10.30.0.0/24", subnet_id="2", pool="10.30.0.10-10.30.0.250"}'
+        values: '240x60'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DHCPPoolExhaustionWarning
+        exp_alerts: []             # above 85% but not for 5 minutes yet
+      - eval_time: 10m
+        alertname: DHCPPoolExhaustionWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: dhcp
+              subnet: 10.20.0.0/22
+              subnet_id: "1"
+            exp_annotations:
+              summary: "DHCP scope 10.20.0.0/22 is 90% full"
+              description: "Scope 10.20.0.0/22 (id 1) has stayed above 85% lease usage for 5 minutes. Clients will start failing to obtain an address if the pool fills. Shorten lease times, widen the pool, or look for a DHCP starvation attack."
+      - eval_time: 10m
+        alertname: DHCPPoolExhaustionCritical
+        exp_alerts: []             # 90% is not yet 95%
+
+  # ------------------------------------------------------ RADIUSAuthLatency
+  - interval: 30s
+    input_series:
+      - series: 'edgeprobe_radius_response_seconds{job="edge-probe", zone="library", server="10.0.0.112"}'
+        values: '0.8x40'
+      - series: 'edgeprobe_radius_response_seconds{job="edge-probe", zone="dorm-a", server="10.0.0.112"}'
+        values: '0.12x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RADIUSAuthLatency
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: aaa
+              zone: library
+              server: 10.0.0.112
+            exp_annotations:
+              summary: "RADIUS server 10.0.0.112 slow from library (800ms)"
+              description: "AAA response time has exceeded 500 ms for 3 minutes as seen from zone library. Slow authentication delays 802.1X/Wi-Fi association; check the directory/back-end database and RADIUS server load."
+
+  # ------------------------------------------------ CoreSwitchInterfaceErrors
+  - interval: 1m
+    input_series:
+      # CRC errors climbing by 60/min (1/s) on one port; the other port is clean.
+      - series: 'dot3StatsFCSErrors{job="snmp", role="core-switch", instance="10.0.1.1", ifName="Te1/0/1", dot3StatsIndex="1"}'
+        values: '0+60x40'
+      - series: 'dot3StatsFCSErrors{job="snmp", role="core-switch", instance="10.0.1.1", ifName="Te1/0/2", dot3StatsIndex="2"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: CoreSwitchInterfaceErrors
+        exp_alerts: []             # needs 10 minutes of sustained errors
+      - eval_time: 25m
+        alertname: CoreSwitchInterfaceErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: switch
+              instance: 10.0.1.1
+              ifName: Te1/0/1
+              error_type: crc
+            exp_annotations:
+              summary: "crc on 10.0.1.1 Te1/0/1 (1.00/s)"
+              description: "Port Te1/0/1 on 10.0.1.1 has had sustained crc for 10 minutes. CRC errors normally mean a bad cable, SFP or duplex mismatch; discards point to congestion or an oversubscribed uplink."

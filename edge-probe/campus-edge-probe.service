@@ -1,0 +1,37 @@
+[Unit]
+Description=CampusNet-Sentinel edge probe
+Documentation=https://github.com/cckhaw/eaziguard
+# DHCP/DNS/portal tests are meaningless before the NIC has an address.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=edgeprobe
+Group=edgeprobe
+EnvironmentFile=/etc/campus-edge-probe/probe.env
+ExecStart=/opt/campus-edge-probe/venv/bin/python /opt/campus-edge-probe/probe.py
+Restart=always
+RestartSec=5
+
+# Only what the DHCP test needs: bind UDP/68 and pin the socket to the NIC.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

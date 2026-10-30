@@ -1,0 +1,197 @@
+# CampusNet-Sentinel Prometheus configuration.
+#
+# Static inventories live in ./targets/*.yml (file-based service discovery), so
+# adding a switch, AP or edge probe never requires touching this file: edit the
+# target file and Prometheus picks it up within a minute, no restart needed.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: campus
+    monitor: campusnet-sentinel
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # ------------------------------------------------------------------ platform
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          role: monitoring-host
+
+  - job_name: blackbox-exporter
+    static_configs:
+      - targets: ["blackbox-exporter:9115"]
+
+  - job_name: snmp-exporter
+    static_configs:
+      - targets: ["snmp-exporter:9116"]
+
+  - job_name: vector
+    static_configs:
+      - targets: ["vector:9598"]
+
+  # ------------------------------------------------------------- SNMP polling
+  # Gateway/firewall, core + distribution switches and wireless controllers.
+  # The exporter address is substituted in after the device address has been
+  # moved into the ?target= parameter.
+  - job_name: snmp
+    scrape_interval: 30s
+    scrape_timeout: 25s
+    metrics_path: /snmp
+    params:
+      module: [if_mib]
+      auth: [campus_v2]
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/gateway.yml
+          - /etc/prometheus/targets/switches.yml
+          - /etc/prometheus/targets/wifi_controllers.yml
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: snmp-exporter:9116
+
+  # --------------------------------------------------------- blackbox: ICMP
+  # 5s resolution on the gateway so "packet loss over 3 minutes" has ~36 samples.
+  - job_name: blackbox-icmp-gateway
+    scrape_interval: 5s
+    scrape_timeout: 4s
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/gateway.yml]
+    relabel_configs: &blackbox_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Access points answer ICMP even when SNMP is rate-limited; 15s probes mean
+  # the 90s heartbeat window in APOffline spans six consecutive failures.
+  - job_name: blackbox-icmp-ap
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/aps.yml]
+    relabel_configs: *blackbox_relabel
+
+  # Reachability of the core infrastructure hosts and switches.
+  - job_name: blackbox-icmp-infra
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/switches.yml
+          - /etc/prometheus/targets/wifi_controllers.yml
+          - /etc/prometheus/targets/dns.yml
+          - /etc/prometheus/targets/dhcp.yml
+          - /etc/prometheus/targets/radius.yml
+          - /etc/prometheus/targets/portal_hosts.yml
+    relabel_configs: *blackbox_relabel
+
+  # ----------------------------------------------------------- blackbox: DNS
+  # Each campus resolver is asked for an internal and an external name.
+  - job_name: blackbox-dns-internal
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [dns_internal]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/dns.yml]
+    relabel_configs: *blackbox_relabel
+
+  - job_name: blackbox-dns-external
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [dns_external]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/dns.yml]
+    relabel_configs: *blackbox_relabel
+
+  # ---------------------------------------------------- blackbox: UDP services
+  - job_name: blackbox-udp-radius
+    scrape_interval: 30s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [udp_radius_auth]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/radius.yml]
+    relabel_configs: *blackbox_relabel
+
+  - job_name: blackbox-udp-dhcp
+    scrape_interval: 30s
+    scrape_timeout: 5s
+    metrics_path: /probe
+    params:
+      module: [udp_dhcp_server]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/dhcp.yml]
+    relabel_configs: *blackbox_relabel
+
+  # ------------------------------------------------- blackbox: captive portal
+  # The portal's plain-HTTP entry point must answer with a redirect to its login
+  # page. (Interception of unauthenticated clients is verified from the client
+  # VLANs by the edge probes, since this host is not on a guest network.)
+  - job_name: blackbox-http-portal-redirect
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    metrics_path: /probe
+    params:
+      module: [http_portal_redirect]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/portal.yml]
+    relabel_configs: *blackbox_relabel
+
+  # The portal login page itself over HTTPS (certificate expiry included).
+  - job_name: blackbox-http-portal-page
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    metrics_path: /probe
+    params:
+      module: [http_portal_page]
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/portal_pages.yml]
+    relabel_configs: *blackbox_relabel
+
+  # ---------------------------------------------------------- DHCP scope usage
+  # Only active when the optional kea-exporter profile is enabled; the job just
+  # shows as DOWN otherwise (and DHCPPoolExhaustionWarning stays silent).
+  - job_name: kea
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["kea-exporter:9547"]
+        labels:
+          role: dhcp-server
+
+  # --------------------------------------------------------------- edge probes
+  # Raspberry Pis / mini PCs in dorms, libraries and lecture halls.
+  - job_name: edge-probe
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/edge_probes.yml]

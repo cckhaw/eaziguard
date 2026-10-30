@@ -1,0 +1,7 @@
+# RADIUS / AAA servers (ICMP + UDP/1812). role must be radius-server.
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.0.112", "10.0.0.113"]
+  labels:
+    role: radius-server
+    site: main-campus

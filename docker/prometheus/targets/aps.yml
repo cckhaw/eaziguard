@@ -1,0 +1,23 @@
+# Access points (ICMP heartbeat every 15s). Add ap_name and building so alerts are readable.
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.10.1.21"]
+  labels:
+    role: ap
+    ap_name: ap-library-1f-01
+    building: Library
+- targets: ["10.10.1.22"]
+  labels:
+    role: ap
+    ap_name: ap-library-2f-01
+    building: Library
+- targets: ["10.10.2.21"]
+  labels:
+    role: ap
+    ap_name: ap-dorm-a-01
+    building: Dorm A
+- targets: ["10.10.3.21"]
+  labels:
+    role: ap
+    ap_name: ap-hall-101-01
+    building: Lecture Hall 1

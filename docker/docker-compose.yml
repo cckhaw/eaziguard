@@ -1,0 +1,180 @@
+# CampusNet-Sentinel backend stack (campus VPS / on-prem server).
+#
+#   cp .env.example .env   # then edit every value
+#   docker compose up -d
+#
+# Only Caddy (80/443) and Vector's syslog listener (514) are exposed on the
+# network. Prometheus and Grafana bind to 127.0.0.1 for local/VPN/SSH-tunnel use;
+# the Vercel dashboard reaches Prometheus only through Caddy, which enforces a
+# bearer token and permits just the read-only query endpoints.
+
+name: campusnet-sentinel
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  vector-data:
+  vector-logs:
+  caddy-data:
+  caddy-config:
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # --------------------------------------------------------------------------
+  # Time-series database + rule engine
+  # --------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    <<: [*restart, *logging]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --web.enable-lifecycle          # allows `curl -X POST :9090/-/reload`
+      - --web.external-url=${PROMETHEUS_EXTERNAL_URL:-http://localhost:9090}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./prometheus/targets:/etc/prometheus/targets:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [monitoring]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # Visualisation (operators; not used by the Vercel dashboard)
+  # --------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.3.0
+    <<: [*restart, *logging]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [monitoring]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Syslog ingestion: switches / controllers / firewall -> Vector -> metrics
+  # --------------------------------------------------------------------------
+  vector:
+    image: timberio/vector:0.42.0-alpine
+    <<: [*restart, *logging]
+    command: ["--config", "/etc/vector/vector.yaml"]
+    environment:
+      VECTOR_LOG: ${VECTOR_LOG:-info}
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector-data:/var/lib/vector
+      - vector-logs:/var/log/campus-syslog
+    ports:
+      - "514:514/udp"
+      - "514:514/tcp"
+    networks: [monitoring]
+
+  # --------------------------------------------------------------------------
+  # SNMP polling (switches, gateway, wireless controller)
+  # --------------------------------------------------------------------------
+  snmp-exporter:
+    image: prom/snmp-exporter:v0.28.0
+    <<: [*restart, *logging]
+    command:
+      - --config.file=/etc/snmp_exporter/snmp.yml
+      - --config.expand-environment-variables
+    environment:
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:?Set SNMP_COMMUNITY in .env}
+    volumes:
+      - ./snmp/snmp.yml:/etc/snmp_exporter/snmp.yml:ro
+    networks: [monitoring]
+
+  # --------------------------------------------------------------------------
+  # ICMP / DNS / UDP / HTTP probes from the VPS vantage point
+  # --------------------------------------------------------------------------
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    <<: [*restart, *logging]
+    command: ["--config.file=/etc/blackbox_exporter/blackbox.yml"]
+    volumes:
+      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+    # ICMP needs raw sockets.
+    cap_add:
+      - NET_RAW
+    networks: [monitoring]
+
+  # --------------------------------------------------------------------------
+  # VPS host metrics
+  # --------------------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    <<: [*restart, *logging]
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+    pid: host
+    networks: [monitoring]
+
+  # --------------------------------------------------------------------------
+  # TLS + bearer-token front door for the Vercel dashboard
+  # --------------------------------------------------------------------------
+  caddy:
+    image: caddy:2.8-alpine
+    <<: [*restart, *logging]
+    environment:
+      PROMETHEUS_PUBLIC_HOST: ${PROMETHEUS_PUBLIC_HOST:?Set PROMETHEUS_PUBLIC_HOST in .env}
+      PROMETHEUS_BEARER_TOKEN: ${PROMETHEUS_BEARER_TOKEN:?Set PROMETHEUS_BEARER_TOKEN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    networks: [monitoring]
+    depends_on:
+      - prometheus
+
+  # --------------------------------------------------------------------------
+  # OPTIONAL: DHCP scope utilisation from an ISC Kea server.
+  #   docker compose --profile kea up -d
+  # Required by the DHCPPoolExhaustionWarning alert. Skip it (and remove the
+  # `kea` job in prometheus.yml) if your DHCP server exports the same metrics
+  # another way.
+  # --------------------------------------------------------------------------
+  kea-exporter:
+    profiles: ["kea"]
+    build:
+      context: ./kea-exporter
+    <<: [*restart, *logging]
+    environment:
+      # One or more Kea Control Agent URLs, space separated.
+      TARGETS: ${KEA_CONTROL_AGENT_URLS:-http://kea.campus.example.edu:8000}
+    networks: [monitoring]

@@ -1,0 +1,11 @@
+# Core and distribution switches (SNMP + ICMP). role must be core-switch or distribution-switch.
+# File-based service discovery: Prometheus re-reads this file automatically.
+# Replace the example RFC1918 addresses with your own devices.
+- targets: ["10.0.1.1", "10.0.1.2"]
+  labels:
+    role: core-switch
+    site: main-campus
+- targets: ["10.0.2.11", "10.0.2.12", "10.0.2.13"]
+  labels:
+    role: distribution-switch
+    site: main-campus
